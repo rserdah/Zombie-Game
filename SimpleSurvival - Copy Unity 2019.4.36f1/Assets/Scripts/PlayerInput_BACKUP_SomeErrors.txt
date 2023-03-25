@@ -1,0 +1,1826 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.AI;
+
+public class PlayerInput : MonoBehaviour, IItemUser, IScoreUser
+{
+    public static class LayerMasks
+    {
+        private static bool initialized;
+
+        public static int everything = ~(0 << 32);
+        public static int obstacle;
+        public static int bodyPart;
+        public static int item;
+
+        public static void Initialize()
+        {
+            if(!initialized)
+            {
+                obstacle = 1 << LayerMask.NameToLayer("Obstacle");
+                bodyPart = 1 << LayerMask.NameToLayer("BodyPart");
+                item = 1 << LayerMask.NameToLayer("Item");
+
+
+                initialized = true;
+            }
+        }
+    }
+
+    [System.Serializable]
+    public struct HeadBobValues
+    {
+        public float horizontalBobRange;
+        public float verticalBobRange;
+        public float strideInterval;
+
+
+        public HeadBobValues(float _horizontalBobRange, float _verticalBobRange, float _strideInterval)
+        {
+            horizontalBobRange = _horizontalBobRange;
+            verticalBobRange = _verticalBobRange;
+            strideInterval = _strideInterval;
+        }
+    }
+
+    [System.Serializable]
+    public struct HalfExtents
+    {
+        public Vector3 halfExtents;
+        [SerializeField]
+        private Vector3 m_origin;
+        public Vector3 origin
+        {
+            get
+            {
+                if(parent)
+                    return parent.TransformPoint(m_origin);
+                else
+                    return Vector3.zero;
+                //transform.TransformPoint(halfExtents.origin)
+            }
+        }
+        public Transform parent;
+    }
+    public Mesh cubeMesh;
+
+    public Animator anim;
+    public CharacterController characterController;
+    public AudioSource audioSource;
+
+    public CameraController cameraController;
+    public AnimatorOverrideController animatorOverrideController;
+    public AnimationClipOverrides clipOverrides;
+
+    public float maxHealth = 100f;
+    public float health = 100f;
+    public float regainFromHealth = 100f;
+    public bool isDead;
+    public bool paused;
+    public Animator deadAnim;
+    public float lastTimeHit;
+    public float healthRegainSpeed = 1f;
+    public float healthRegainT;
+    public float healthRegainDelay = 4f;
+
+    private HeadBob headBob;
+    public HeadBobValues walkHeadBob = new HeadBobValues(0.00025f, 0.0005f, 0.5f);
+    public HeadBobValues runHeadBob = new HeadBobValues(0.00025f * 2f, 0.0005f * 2f, 0.5f * 1.5f);
+    public HeadBobValues aimHeadBob = new HeadBobValues(0f, 0.0001f, 1f);
+
+    public AudioSourcePlayer audioSourcePlayer;
+
+    private float yRot;
+    public float mouseRotSensitivity; //Same as CameraController sensitivity
+
+    public float swayX;
+    public Vector2 fovUnaimedAimed = new Vector2(60f, 40f);
+    public float swaySpeed = 1;
+    public float aimSpeed = 15f;
+    public float aimRelaxSpeed = 7f;
+    public float aimValue = 0f;
+    public float aimInterpolator;
+    public Camera camera;
+    public Camera scopeCamera;
+    public Vector2 screenPt;
+    public Transform sightDot;
+
+    public Light flashLight;
+    public Vector2 flashLightRangeUnaimedAimed = new Vector2(10, 150);
+    public Vector2 flashLightAngleUnaimedAimed = new Vector2(70, 20);
+
+    public float speed = 4f;
+    public float walkSpeed = 4f;
+    public float runSpeed = 6f;
+    public float jumpHeight = 2f;
+
+    public float gravity = -9.81f;
+    public Vector3 velocity;
+
+    public Vector3 groundCheckOrigin;
+    public Vector3 groundCheckHalfExtents;
+
+    public HalfExtents bodyHalfExtents;
+    public Collider[] hitParts;
+    public int lastHitColCount;
+    public List<Collider> currentHitColliders = new List<Collider>();
+    public List<BodyPart> currentAttackingParts = new List<BodyPart>();
+    public List<BodyPart> currentHitParts = new List<BodyPart>();
+
+    public HalfExtents selectHalfExtents; //Going to follow rotation of cameraController
+    public Collider[] selectedItems;
+    public Animator promptAnim;
+    public Text promptText;
+
+    public AudioClip incrementalReloadClip;
+    public Vector2 minMaxShootPitch = Vector2.one;
+    public Vector2 minMaxIncrementalReloadPitch = Vector2.one;
+    public GameObject bulletHit;
+    public AudioClip hitmarkerSound;
+    public CanvasGroup hitMarker;
+
+    public AudioClip gettHitSound;
+
+    public bool isGrounded;
+    public Vector3 groundedMovement;
+
+    public bool isCrouching;
+    public float standHeight = 1.75f;
+    public float crouchHeight = 0.75f;
+    public float proneHeight = 0.25f;
+    IEnumerator crouchCoroutine;
+    public float crouchTime = 0.75f;
+    public AnimationCurve standToCrouchCurve;
+    public AnimationCurve crouchToStandCurve;
+    public float crouchSpeed = 3f;
+    private float crouchCurveT;
+    private float crouchInterpolator;
+
+
+    public bool isRunning;
+
+    public (float forward, float strafe) movementInput;
+
+    private bool isOutOfBounds;
+
+    public Gun gun;
+    public bool useGunBoneBackward;
+    public Transform gunBone;
+    
+    public Text ammoText;
+
+    [SerializeField]
+    private int m_score = 0;
+
+    public int score
+    {
+        get
+        {
+            return m_score;
+        }
+
+        set
+        {
+            m_score = value;
+
+            if(scoreText)
+                scoreText.text = score + "";
+        }
+    }
+
+    public Text scoreText;
+    public VerticalLayoutGroup addedScoreLine;
+    public bool addScoreTest;
+    public int scoreAddedtest;
+
+    public ScoreManager scoreManager;
+
+    public Image outOfBoundsImage;
+
+    public GameObject explosivePrefab;
+    public Explosive currentExplosive;
+    public Transform explosivePostionStart;
+    public float throwForce = 7000f;
+    public Vector3 explosiveTorque;
+
+    public GameObject bloodEffect;
+
+    public Gun item1;
+    public Gun item2;
+    public Explosive item3;
+    public Explosive item4;
+    public List<string> items
+    {
+        get
+        {
+            List<string> list = new List<string>();
+
+            list.Add(item1 ? item1.name : "");
+            list.Add(item2 ? item2.name : "");
+            list.Add(item3 ? item3.name : ""); //Eventually add name and displayName vars. to Explosive class (right now Exlposive.name is just Object.name so add a new public string name;)
+            list.Add(item4 ? item4.name : ""); //Eventually add name and displayName vars. to Explosive class (right now Exlposive.name is just Object.name so add a new public string name;)
+
+            return list;
+        }
+    }
+    public int currentItemIndex;
+
+    public Item[] embeddedItems;
+    public Dictionary<string, Item> itemDictionary = new Dictionary<string, Item>();
+
+    public /*KeyValuePair<int, int>*/ List<string> inventoryOLD;
+    public /*List<ItemID>*/ Dictionary<string, ItemID> inventory = new Dictionary<string, ItemID>();
+    public List<int> inventoryCounts = new List<int>();
+    (List<int> counts, List<string> names, List<ItemID> itemIDs) inventory2 = (new List<int>(), new List<string>(), new List<ItemID>());
+
+    [Header("Gun Debugging")]
+    public bool lotsOfAmmo;
+    public bool lowDamage;
+    public bool fullAuto;
+
+
+    public ItemID itemIDTest;
+    public GameObject inventoryScreen;
+    public Dropdown inventoryDropdown;
+    public Dropdown recipesDropdown;
+    public Transform ingredientsLayoutGroup;
+    public GameObject ingredientTextPrefab;
+
+
+    private void Start()
+    {
+        LayerMasks.Initialize();
+
+        headBob = GetComponent<HeadBob>();
+
+        anim.runtimeAnimatorController = animatorOverrideController;
+
+        clipOverrides = new AnimationClipOverrides(animatorOverrideController.overridesCount);
+        animatorOverrideController.GetOverrides(clipOverrides);
+
+        UpdateAnimatorOverrideController(gun);
+
+        UpdateAmmo();
+
+        foreach(Item i in embeddedItems)
+        {
+            itemDictionary.Add(i.itemID.itemName, i);
+        }
+
+        //Update scoreText (scoreText is set when score is set to a value)
+        int score1 = m_score;
+        score = score1;
+    }
+
+    //!!! Don't change to FixedUpdate() or else switching weapons input becomes nonresponsive !!!
+    private void Update()
+    {
+        if(!paused)
+        {
+            //For Gun debugging
+            if(lotsOfAmmo && gun)
+                gun.ammoLeft = gun.magazineSize = gun.ammoReserved = gun.maxAmmoReserved = 99999999;
+            if(lowDamage && gun)
+                gun.damage = 0.00001f;
+            if(fullAuto)
+                gun.fireMode = Gun.FireMode.AUTOMATIC;
+
+            if(!isDead)
+            {
+                //----Looking----
+                yRot += Input.GetAxis("Mouse X") * mouseRotSensitivity;
+                transform.rotation = Quaternion.Euler(0, yRot, 0);
+
+                swayX = Input.GetAxis("Mouse X") * Time.deltaTime * swaySpeed;
+                anim.SetFloat("SwayX", swayX);
+                //---------------
+
+                //----Selecting Items----
+                selectedItems = GetCollisions(selectHalfExtents, LayerMasks.item, selectHalfExtents.parent.rotation);
+
+                if(selectedItems.Length > 0)
+                {
+                    //Item item = selectedItems[0].GetComponent<Item>(); //Temp.; should cache result and see if selecting the same thing instead of always calling GetComponent() when selecting an Item
+                    ISelectable iSelectable = selectedItems[0].GetComponent<ISelectable>(); //Temp.; should cache result and see if selecting the same thing instead of always calling GetComponent() when selecting an Item
+
+                    if(iSelectable != null)
+                    {
+                        SetPromptText(iSelectable.prompt);
+
+                        //else
+                        //{
+                        //    //Displaying the prompt of a generic Item, but this part is temp. so take out anyways (b/c Item no longer has a GetPrimaryPrompt() method)
+                        //    //SetPromptText(item.GetPrimaryPrompt());
+                        //}
+
+                        promptAnim.SetInteger("ShowHide", 1);
+
+                        if(Input.GetKeyDown(KeyCode.E))
+                            iSelectable.Use(this);
+                    }
+                }
+                else
+                    promptAnim.SetInteger("ShowHide", 0);
+                //-----------------------
+
+                //----------Changing Weapons/Items-------------
+
+                int dir = 0;
+                int lastIndex = currentItemIndex;
+
+                if(Input.mouseScrollDelta.y < 0)
+                {
+                    currentItemIndex++;
+                    dir = 1;
+                }
+                else if(Input.mouseScrollDelta.y > 0)
+                {
+                    currentItemIndex--;
+                    dir = -1;
+                }
+
+                if(Mathf.Abs(dir) > 0 && (item1 || item2 || item3 || item4)) //If scrolling AND have any Items to scroll
+                {
+                    currentItemIndex = MathHelper.LoopInt(currentItemIndex, items.Count);
+
+                    while(items[currentItemIndex].Equals("")) //Skip to the next available Item if current one is null
+                    {
+                        currentItemIndex += dir * 1;
+                        currentItemIndex = MathHelper.LoopInt(currentItemIndex, items.Count);
+                    }
+
+                    switch(lastIndex)
+                    {
+                        case 0:
+                            item1.gameObject.SetActive(false);
+                            break;
+                        case 1:
+                            item2.gameObject.SetActive(false);
+                            break;
+                        case 2:
+                            item3.gameObject.SetActive(false);
+                            break;
+                        case 3:
+                            item4.gameObject.SetActive(false);
+                            break;
+                    }
+
+                    switch(currentItemIndex)
+                    {
+                        case 0:
+                            item1.gameObject.SetActive(true);
+                            gun = item1;
+                            break;
+                        case 1:
+                            item2.gameObject.SetActive(true);
+                            gun = item2;
+                            break;
+                        case 2:
+                            item3.gameObject.SetActive(true);
+                            break;
+                        case 3:
+                            item4.gameObject.SetActive(true);
+                            break;
+                    }
+
+                    UpdateAnimatorOverrideController(gun);
+
+                    UpdateAmmo();
+                }
+
+                //-----------------------
+
+                //----Moving----
+                movementInput.forward = Input.GetAxis("Vertical");
+                movementInput.strafe = Input.GetAxis("Horizontal");
+
+                if(Input.GetKey(KeyCode.LeftShift))
+                {
+                    if(!Input.GetKey(KeyCode.Mouse1))
+                    {
+                        SetHeadBobValues(runHeadBob);
+                        speed = runSpeed;
+
+                        //For the first frame player starts running, if they are crouched force them out of crouch;
+                        //TODO: Implement a running while crouched feature (not quite as fast as standing running but faster than just walking while crouched to allow players to be stealthy but fast at certain times)
+                        if(!isRunning)
+                        {
+                            if(isCrouching)
+                            {
+                                isCrouching = false;
+
+                                StartCoroutine(Crouch());
+                            }
+                        }
+
+                        isRunning = true;
+                    }
+                }
+                else
+                {
+                    if(!Input.GetKey(KeyCode.Mouse1))
+                        SetHeadBobValues(walkHeadBob);
+
+                    speed = walkSpeed;
+                    isRunning = false;
+                }
+
+                Vector3 move = transform.right * movementInput.strafe + transform.forward * movementInput.forward;
+                groundedMovement = move;
+
+                characterController.Move(move * Time.deltaTime * speed);
+                //--------------
+
+                //----Crouching----
+
+                if(Input.GetKeyDown(KeyCode.C))
+                {
+                    isCrouching = !isCrouching;
+
+                    StartCoroutine(Crouch());
+                }
+                else
+                {
+                    //characterController.height = standHeight;
+                    //isCrouching = false;
+                }
+
+                //-----------------
+
+                //----Jumping----
+                if(Input.GetKeyDown(KeyCode.Space) && isGrounded)
+                    velocity.y = Mathf.Sqrt(jumpHeight * -2 * gravity);//Formula for jumping to a certain heigh: velocity = sqrt(height * -2 * gravity)
+                                                                       //---------------
+
+                //----Gravity----
+                isGrounded = Physics.CheckBox(transform.position + groundCheckOrigin, groundCheckHalfExtents, new Quaternion(), LayerMasks.obstacle);
+
+                if(isGrounded && velocity.y < 0)
+                    velocity.y = -2f;
+
+                velocity.y += gravity * Time.deltaTime;
+                //Mutliply by Time.deltaTime again b/c deltaY = .5 * gravity * deltaTime ^ 2
+                characterController.Move(velocity * Time.deltaTime);
+                //---------------
+
+                //----Shooting----
+                //Old
+                //anim.SetBool("IsAiming", Input.GetKey(KeyCode.Mouse1));
+
+                //New
+                if(Input.GetKey(KeyCode.Mouse1))
+                {
+                    if(aimValue < 1f)
+                        aimInterpolator += aimSpeed * Time.deltaTime;
+
+                    anim.SetBool("IsAiming", true);
+
+                    speed = walkSpeed;
+
+                    SetHeadBobValues(aimHeadBob);
+
+                    //anim.SetFloat("IdleType", aimValue); //Going to cache current IdleType float val. so if stops pressing aim before fully aiming, it can start lerping back to idle from where it currently is instead
+                    //of snapping to aim and then going to idle
+                }
+                else
+                {
+                    if(aimValue > 0f)
+                        aimInterpolator -= aimRelaxSpeed * Time.deltaTime;
+
+                    anim.SetBool("IsAiming", false);
+
+                    //anim.SetFloat("IdleType", Mathf.Lerp(0f, 1f, aimSpeed * Time.deltaTime));
+                }
+
+                aimInterpolator = Mathf.Clamp(aimInterpolator, -1f, 1f);
+                aimValue = Mathf.Lerp(0f, 1f, aimInterpolator);
+                anim.SetFloat("IdleType", aimValue);
+                //aimFOV = Mathf.Lerp(40f, 60f, aimInterpolator);
+
+                camera.fieldOfView = Mathf.Lerp(fovUnaimedAimed.x, fovUnaimedAimed.y, aimInterpolator);
+                //Make the flashlight range further and smaller angle when aimed and wider and less range when not aimed
+                flashLight.range = Mathf.Lerp(flashLightRangeUnaimedAimed.x, flashLightRangeUnaimedAimed.y, aimInterpolator);
+                flashLight.spotAngle = Mathf.Lerp(flashLightAngleUnaimedAimed.x, flashLightAngleUnaimedAimed.y, aimInterpolator);
+
+                //if(Input.GetKeyDown(KeyCode.Mouse0))
+                if((Input.GetKeyDown(KeyCode.Mouse0) && (gun.fireMode == Gun.FireMode.SEMIAUTOMATIC || gun.fireMode == Gun.FireMode.BURST)) || (Input.GetKey(KeyCode.Mouse0) && gun.fireMode == Gun.FireMode.AUTOMATIC))
+                {
+                    //If Gun doesn't have rechamber or doesn't need to rechamber now AND Gun has enough ammo
+                    if((!gun.hasRechamber || !gun.needsRechamber) && gun.ammoLeft > 0)
+                    {
+                        if(gun.fireMode == Gun.FireMode.BURST)
+                        {
+                            //For burst and auto gun shot, see (https://forum.unity.com/threads/coroutines-and-lag-low-fps.336689/) and search for comment containing "If you have precise, game-relevant mechanics, time them according to Fixed Timestep...."
+                            StartCoroutine(BurstShot()); //temp
+
+
+                            //IF GUN'S FIREMODE IS BURST, USE FIRERATE TO CHECK FOR WHEN THEY CAN START A NEW BUSRT SHOT
+                        }
+                        else if((Time.time - gun.lastTimeShot > 1 / gun.fireRate))
+                        {
+                            Debug.LogError("For burst and auto gun shot, see (https://forum.unity.com/threads/coroutines-and-lag-low-fps.336689/) and search for comment containing \"If you have precise, game - relevant mechanics, time them according to Fixed Timestep....\"");
+
+                            gun.rechambered = false;
+
+                            if(anim.GetBool("IsAiming"))
+                                anim.Play("AimShoot", 0, 0f);
+                            else
+                                anim.Play("Shoot", 0, 0f);
+
+                            if(gun.shootClip)
+                                PlayOneShot(gun.shootClip, minMaxShootPitch);
+
+                            if(gun.muzzleFlash)
+                                gun.muzzleFlash.Play();
+
+                            if(!gun.hasRechamber)
+                                Invoke("CartridgeEject", gun.cartridgeEjectDelay);
+
+                            if(gun.anim)
+                                gun.anim.Play("Shoot", 0, 0f);
+
+                            if(gun.hasRotatingBarrels)
+                                gun.barrelRotate.set = true;
+
+                            Ray ray = new Ray();
+                            RaycastHit hit;
+
+                            ray.origin = gun.shootOrigin;
+
+                            if(useGunBoneBackward)
+                                ray.direction = -gunBone.forward;
+                            else
+                                ray.direction = gun.shootDirection;
+
+                            //temp.
+                            if(aimValue > 0)
+                            {
+                                //ray = camera.ScreenPointToRay(camera.WorldToScreenPoint(sightDot.transform.position));
+                                ray.origin = sightDot.position;
+                                ray.direction = scopeCamera.transform.forward;
+                                Debug.LogError("Setting");
+                                //ray.direction = camera.transform.forward;
+                            }
+
+                            //GameObject cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                            //Destroy(cube.GetComponent<Collider>());
+
+                            //GameObject sphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                            //Destroy(sphere.GetComponent<Collider>());
+
+                            if(Physics.Raycast(ray, out hit, 500f, LayerMasks.everything, QueryTriggerInteraction.Ignore))
+                            {
+                                Debug.LogError("Hit " + hit.transform.name);
+
+                                BodyPart hitBodyPart = hit.transform.GetComponent<BodyPart>();
+
+                                if(hitBodyPart && hitBodyPart.body)
+                                {
+                                    bool isDeadBeforeHit = hitBodyPart.body.isDead;
+                                    bool isDeadAfterHit;
+                                    bool isKillShot;
+                                    hitBodyPart.TakeDamage(null, gun.damage);
+
+                                    isDeadAfterHit = hitBodyPart.body.isDead;
+
+                                    isKillShot = !isDeadBeforeHit && isDeadAfterHit;
+
+                                    audioSource.PlayOneShot(hitmarkerSound);
+                                    hitMarker.alpha = 1f;
+
+                                    int addedScore = GetHitScore(hitBodyPart.bodyPart, isKillShot);
+                                    //score += addedScore;
+                                    scoreManager.AddScore(addedScore);
+                                }
+                                else if(hit.transform.gameObject.layer == LayerMask.NameToLayer("Explosive"))
+                                {
+                                    hit.transform.GetComponent<Explosive>().set = true; //temp.; way of setting off explosives from other classes
+                                    Debug.LogError("Hit " + hit.transform.name);
+                                }
+
+                                Transform hitEffect = Instantiate(bulletHit).transform;
+
+                                hitEffect.gameObject.SetActive(true);
+                                hitEffect.position = hit.point;
+                                hitEffect.forward = hit.normal;
+
+                                //cube.transform.forward = hit.point - gun.shootOrigin;
+                                //cube.transform.position = (hit.point + gun.shootOrigin) / 2f;
+                                //cube.transform.localScale = new Vector3(0.025f, 0.025f, (hit.point - gun.shootOrigin).magnitude);
+                                //cube.GetComponent<Renderer>().material.color = Color.green;
+
+                                //sphere.transform.position = hit.point;
+                                //sphere.transform.localScale = new Vector3(0.075f, 0.075f, 0.075f);
+                                //sphere.GetComponent<MeshRenderer>().material = null;
+
+                                //Debug.LogError("Hit " + hit.collider.name);
+                            }
+                            else
+                            {
+                                //cube.transform.forward = ray.direction;
+                                //cube.transform.position = ray.origin + ray.direction * 500f;
+                                //cube.transform.localScale = new Vector3(0.025f, 0.025f, 1000f);
+                                //cube.GetComponent<Renderer>().material.color = Color.red;
+                            }
+
+                            gun.ammoLeft--;
+                            gun.lastTimeShot = Time.time;
+
+                            if(gun.needsRechamber)
+                            {
+                                //if(/*rightGun.components.anim && */!rightGun.stats.needsRechamber2)
+                                //    ((FirstPersonPlayer)player).rightArmAnim.Play("Interactable_Rechamber", 1, 0f);
+
+                                //rightGun.stats.needsRechamber2 = true;
+
+                                //StartCoroutine(Rechamber(rightGun));
+
+                                Debug.LogError("Needs rechamber");
+                                ////temp.
+                                //if(gun.rechamberSound)
+                                //    StartCoroutine(WaitThenRechamber());
+
+                                //anim.Play("Rechamber", 0, 0f);
+                                anim.SetTrigger("Rechamber");
+                            }
+
+                            UpdateAmmo();
+                        }
+                    }
+                    else
+                    {
+                        //Play empty gun click
+                    }
+                }
+
+                if(Input.GetKeyDown(KeyCode.R))
+                {
+                    if(gun.hasRechamber && gun.needsRechamber && gun.canManualIncrementalReload)
+                    {
+                        gun.willManualIncrementalReload = true;
+                        Debug.LogError("Set Manual Incremental Reload");
+                    }
+                    else if(gun.ammoLeft < gun.magazineSize) //If not already full magazine
+                    {
+                        if(gun.ammoReserved > 0) //If have ammo to reload with
+                        {
+                            anim.Play("Reload");
+                            gun.anim.Play("Reload");
+                            //anim.SetBool("IsReloading", true);
+
+                            //Play reload animation (for guns w/o clips and need to be reloaded bullet-by-bullet, can interrupt reload process if need to shoot before completely done reloading)
+                            //Decrement ammoReserved by the appropriate number
+                        }
+                    }
+                }
+                //----------------
+
+                //Throwing Explosives
+
+                //if(Input.GetKeyDown(KeyCode.Q))
+                //{
+                //    GameObject g = Instantiate(explosivePrefab);
+                //    Rigidbody r = g.GetComponent<Rigidbody>();
+
+                //    g.transform.position = explosivePostionStart.position;
+
+                //    r.isKinematic = false;
+                //    r.AddForce(camera.transform.forward * throwForce);
+
+                //    g.GetComponent<Explosive>().SetFuse();
+                //}
+
+                if(Input.GetKey(KeyCode.Mouse2))
+                {
+                    if(!currentExplosive)
+                    {
+                        anim.Play("Grenade_StartThrow");
+
+                        GameObject g = Instantiate(explosivePrefab);
+                        currentExplosive = g.GetComponent<Explosive>();
+
+                        g.transform.position = explosivePostionStart.position;
+                        g.transform.parent = explosivePostionStart;
+                        g.transform.forward = explosivePostionStart.forward;
+
+                        currentExplosive.SetFuse();
+                    }
+                }
+                else if(Input.GetKeyUp(KeyCode.Mouse2))
+                {
+                    if(currentExplosive)
+                    {
+                        //Old
+                        //currentExplosive.transform.parent = null;
+
+                        //currentExplosive.rb.isKinematic = false;
+                        //currentExplosive.rb.AddForce(camera.transform.forward * throwForce);
+                        //currentExplosive.rb.AddRelativeTorque(explosiveTorque);
+
+                        //currentExplosive = null;
+
+                        //New
+                        anim.Play("Grenade_EndThrow"); //This Animation has an AnimationEvent that will call ThrowExplosive() so that the grenade will be thrown
+                    }
+                }
+
+                //-------------------
+
+
+                //----Getting Hit----
+                lastHitColCount = currentHitColliders.Count;
+                currentHitColliders = ToList(GetCollisions(bodyHalfExtents, LayerMasks.bodyPart));
+
+                BodyPart part = null;
+                foreach(Collider col in currentHitColliders)
+                {
+                    part = col.GetComponent<BodyPart>();
+                    if(part && part.body && part.body.isAttacking)
+                    {
+                        //currentAttackingParts.Add(part);
+                        TakeDamage(part.body);
+                        part.body.isAttacking = false;
+
+                        audioSource.PlayOneShot(gettHitSound);
+                    }
+                }
+
+                if(health < maxHealth && Time.time - lastTimeHit >= healthRegainDelay)
+                {
+                    health = Mathf.Lerp(regainFromHealth, maxHealth, healthRegainT);
+                    healthRegainT += healthRegainSpeed * Time.deltaTime;
+                }
+                else
+                {
+                    healthRegainT = 0;
+                }
+
+                deadAnim.SetFloat("Damage", Mathf.Clamp01(1 - (health / maxHealth)));
+
+                //if(lastHitColCount != currentHitColliders.Count)
+                //{
+                //    foreach(Collider col in currentHitColliders)
+                //    {
+
+                //    }
+                //}
+                //-------------------
+
+            }
+
+            hitMarker.alpha -= 0.5f * Time.deltaTime;
+
+            if(addScoreTest)
+            {
+                GameObject g = Instantiate(addedScoreLine.transform.GetChild(0).gameObject);
+
+                g.GetComponent<Text>().text = "+" + scoreAddedtest;
+                g.transform.parent = addedScoreLine.transform;
+
+
+                addScoreTest = false;
+            }
+        }
+
+        //if(Input.GetKeyDown(KeyCode.Escape))
+        //{
+        //    TogglePause();
+        //}
+        //else if(Input.GetKeyDown(KeyCode.Tab))
+
+        if(Input.GetKeyDown(KeyCode.Tab))
+        {
+            TogglePause();
+
+            inventoryScreen.SetActive(paused);
+
+            LoadInventoryScreen();
+        }
+    }
+
+    private void TogglePause()
+    {
+        paused = !paused;
+
+        if(paused)
+        {
+            cameraController.Pause();
+            GetComponent<CamRotate>().enabled = false;
+
+            CheckItemsCraftable();
+        }
+        else
+        {
+            cameraController.Resume();
+            GetComponent<CamRotate>().enabled = true;
+        }
+    }
+
+    private void LoadInventoryScreen()
+    {
+        int currentValue = inventoryDropdown.value;
+        inventoryDropdown.ClearOptions();
+        inventoryDropdown.AddOptions(GetInventory());
+        inventoryDropdown.value = currentValue;
+
+        currentValue = recipesDropdown.value;
+        recipesDropdown.ClearOptions();
+        recipesDropdown.AddOptions(GetAllRecipes());
+        recipesDropdown.value = currentValue;
+    }
+
+    public void UpdateSelectedRecipeIngredients()
+    {
+        Text ingredientText;
+
+        foreach(Transform t in ingredientsLayoutGroup)
+            Destroy(t.gameObject);
+
+        for(int i = 0; i < Item.allRecipes[recipesDropdown.value].ingredients.Length; i++)
+        {
+            ingredientText = Instantiate(ingredientTextPrefab).GetComponent<Text>();
+
+            ingredientText.transform.parent = ingredientsLayoutGroup;
+            ingredientText.text = $"{Item.allRecipes[recipesDropdown.value].ingredients[i].itemName} ({Item.allRecipes[recipesDropdown.value].quantities[i]})";
+        }
+    }
+
+    private void CheckItemsCraftable()
+    {
+
+    }
+
+    /// <summary>
+    /// Returns the amount of a given Recipe that this PlayerInput can craft, returns zero if the PlayerInput cannot craft any.
+    /// </summary>
+    /// <param name="recipe"></param>
+    /// <returns></returns>
+    private int AmountCraftable(Recipe recipe)
+    {
+        //Eventually make it so there is a panel next to the recipes dropdown where the player can see how much of each ingredient they have and how much of what ingredient they need, 
+        //but for now just display the amount craftable for each recipe on the dropdown and display the recipe's ingredients next to it
+
+        int amountCraftable = 0, ingredientRatio, quantityHeld, quantityNeeded;
+
+        int[] ingredientIndices = FindIngredients(recipe);
+
+        //ingredientIndices and recipe.quantities should have the same length b/c FindIngredients here is called with recipe
+        if(ingredientIndices != null && ingredientIndices.Length > 0 && ingredientIndices.Length == recipe.quantities.Length) //check last part!!!!!
+        {
+            for(int i = 0; i < recipe.quantities.Length; i++)
+            {
+                quantityHeld = inventory2.counts[ingredientIndices[i]];
+                quantityNeeded = recipe.quantities[i];
+
+                ingredientRatio = quantityHeld / quantityNeeded;
+
+                //On the first ingredient, need to set amountCraftable to = ingredientRatio in order to eventually find the least amountCraftable
+                if(i == 0)
+                    amountCraftable = ingredientRatio;
+
+                if(ingredientRatio > 0)
+                {
+                    if(ingredientRatio < amountCraftable)
+                        amountCraftable = ingredientRatio;
+                }
+                //If don't have enough of an ingredient, can't craft at all
+                else
+                {
+                    return 0;
+                }
+            }
+        }
+
+        return amountCraftable;
+    }
+
+    private int AmountCraftable(ItemID itemID)
+    {
+        return AmountCraftable(itemID.recipe);
+    }
+
+    /// <summary>
+    /// Attempts to find the indices of the required ingredients in this PlayerInput's inventory to craft the given Recipe. Returns null if not all ingredients are found.
+    /// </summary>
+    /// <param name="recipe"></param>
+    /// <returns></returns>
+    private int[] FindIngredients(Recipe recipe)
+    {
+        int[] indices = new int[recipe.ingredients.Length];
+        int ingredientIndex;
+
+        for(int j = 0; j < recipe.ingredients.Length; j++)
+        {
+            ingredientIndex = inventory2.names.IndexOf(recipe.ingredients[j].itemName);
+
+            if(ingredientIndex > -1)
+            {
+                indices[j] = ingredientIndex;
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+
+        return indices;
+    }
+
+    private void Craft(Recipe recipe, int amount)
+    {
+        if(amount > 0 && recipe.hasItemID)
+        {
+            int amountCraftable = AmountCraftable(recipe);
+
+            if(amountCraftable > 0)
+            {
+                Debug.LogError($"Can craft {recipe.GetItemID().itemName}");
+
+                //If trying to craft more than the amount can craft, set the amount to the maximum amount craftable
+                if(amount > amountCraftable)
+                    amount = amountCraftable;
+
+                //Use/Consume the ingredients from the inventory (delete them in the quantites from the given Recipe)
+                for(int i = 0; i < recipe.ingredients.Length; i++)
+                {
+                    DeleteFromInventory(recipe.ingredients[i], amount * recipe.quantities[i]);
+                }
+
+                AddToInventory(recipe.GetItemID(), amount);
+
+
+                LoadInventoryScreen();
+            }
+            else
+            {
+                Debug.LogError($"Cannot craft {recipe.GetItemID().itemName}");
+            }
+        }
+    }
+
+    private void Craft(Recipe recipe)
+    {
+        Craft(recipe, 1);
+
+        //if(recipe.hasItemID)
+        //{
+        //    if(AmountCraftable(recipe) > 0)
+        //    {
+        //        Debug.LogError($"Can craft {recipe.GetItemID().itemName}");
+
+        //        //Use/Consume the ingredients from the inventory (delete them in the quantites from the given Recipe)
+        //        for(int i = 0; i < recipe.ingredients.Length; i++)
+        //        {
+        //            DeleteFromInventory(recipe.ingredients[i], recipe.quantities[i]);
+        //        }
+
+        //        AddToInventory(recipe.GetItemID());
+        //    }
+        //    else
+        //    {
+        //        Debug.LogError($"Cannot craft {recipe.GetItemID().itemName}");
+        //    }
+        //}
+
+        //LoadInventoryScreen();
+    }
+
+    public void CraftCurrentRecipe()
+    {
+        Craft(Item.allRecipes[recipesDropdown.value]);
+        //Debug.LogError(recipesDropdown.options[recipesDropdown.value].text);
+        //Debug.LogError(recipesDropdown.value);
+    }
+
+    /// <summary>
+    /// EVENTUALLY COMBINE THIS WITH PickupPartItem() (b/c this is currently copied from there)
+    /// </summary>
+    /// <param name="itemID"></param>
+    /// <param name="amount"></param>
+    private void AddToInventory(ItemID itemID, int amount = 1)
+    {
+        bool hasItem, canPickupAll;
+
+        int index = inventory2.names.IndexOf(itemID.itemName);
+        int amountPickable;
+
+        hasItem = index > -1;
+
+        if(hasItem)
+            amountPickable = inventory2.itemIDs[index].maxCount - inventory2.counts[index]; //If have the item, the amountPickable is the difference between maxCount and the amount held currently
+        else
+            amountPickable = itemID.maxCount; //If don't have the item, the amountPickable would be the maxCount
+
+        canPickupAll = amountPickable > amount;
+
+        //If already have this ItemID
+        if(hasItem)
+        {
+            //If can pickup all of the item without going over the maxCount limit, then pick up all
+            if(canPickupAll)
+            {
+                inventory2.counts[index] += amount;
+            }
+            //Else if can't pickup all, then partial pickup
+            else
+            {
+                inventory2.counts[index] += amountPickable;
+            }
+        }
+        //Else if don't have this ItemID
+        else
+        {
+            //If can pickup all of the item without going over the maxCount limit, then pick up all
+            if(canPickupAll)
+            {
+                inventory2.counts.Add(amount);
+                inventory2.names.Add(itemID.itemName);
+                inventory2.itemIDs.Add(itemID);
+            }
+            //Else if can't pickup all, then partial pickup
+            else
+            {
+                inventory2.names.Add(itemID.itemName);
+                inventory2.itemIDs.Add(itemID);
+
+                inventory2.counts.Add(amountPickable);
+            }
+        }
+    }
+
+    private void DeleteFromInventory(ItemID itemID, int amount = 1)
+    {
+        int index = inventory2.names.IndexOf(itemID.itemName);
+
+        //Remove the given amount of the ItemID from the inventory
+        if(amount <= inventory2.counts[index])
+            inventory2.counts[index] -= amount;
+
+        //If the count of the ItemID is zero after removing the amount, remove the ItemID from the inventory
+        if(inventory2.counts[index] == 0)
+        {
+            inventory2.counts.RemoveAt(index);
+            inventory2.names.RemoveAt(index);
+            inventory2.itemIDs.RemoveAt(index);
+        }
+    }
+
+    private void tempShoot()
+    {
+        gun.rechambered = false;
+
+        if(anim.GetBool("IsAiming"))
+            anim.Play("AimShoot", 0, 0f);
+        else
+            anim.Play("Shoot", 0, 0f);
+
+        if(gun.shootClip)
+            PlayOneShot(gun.shootClip, minMaxShootPitch);
+
+        if(gun.anim)
+            gun.anim.Play("Shoot", 0, 0f);
+
+        Ray ray = new Ray();
+        RaycastHit hit;
+        ray.origin = gun.shootOrigin;
+        ray.direction = gun.shootDirection;
+
+        //temp.
+        if(aimValue > 0)
+        {
+            //ray = camera.ScreenPointToRay(camera.WorldToScreenPoint(sightDot.transform.position));
+            ray.origin = sightDot.position;
+            ray.direction = scopeCamera.transform.forward;
+            Debug.LogError("Setting");
+            //ray.direction = camera.transform.forward;
+        }
+
+        //GameObject cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        //Destroy(cube.GetComponent<Collider>());
+
+        //GameObject sphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        //Destroy(sphere.GetComponent<Collider>());
+
+        if(Physics.Raycast(ray, out hit, 500f, LayerMasks.everything, QueryTriggerInteraction.Ignore))
+        {
+            BodyPart hitBodyPart = hit.transform.GetComponent<BodyPart>();
+
+            if(hitBodyPart && hitBodyPart.body)
+            {
+                hitBodyPart.TakeDamage(null, gun.damage);
+            }
+
+            Transform hitEffect = Instantiate(bulletHit).transform;
+
+            hitEffect.position = hit.point;
+            hitEffect.forward = hit.normal;
+
+            //cube.transform.forward = hit.point - gun.shootOrigin;
+            //cube.transform.position = (hit.point + gun.shootOrigin) / 2f;
+            //cube.transform.localScale = new Vector3(0.025f, 0.025f, (hit.point - gun.shootOrigin).magnitude);
+            //cube.GetComponent<Renderer>().material.color = Color.green;
+
+            //sphere.transform.position = hit.point;
+            //sphere.transform.localScale = new Vector3(0.075f, 0.075f, 0.075f);
+            //sphere.GetComponent<MeshRenderer>().material = null;
+
+            //Debug.LogError("Hit " + hit.collider.name);
+        }
+        else
+        {
+            //cube.transform.forward = ray.direction;
+            //cube.transform.position = ray.origin + ray.direction * 500f;
+            //cube.transform.localScale = new Vector3(0.025f, 0.025f, 1000f);
+            //cube.GetComponent<Renderer>().material.color = Color.red;
+        }
+
+        gun.ammoLeft--;
+        gun.lastTimeShot = Time.time;
+
+        if(gun.needsRechamber)
+        {
+            //if(/*rightGun.components.anim && */!rightGun.stats.needsRechamber2)
+            //    ((FirstPersonPlayer)player).rightArmAnim.Play("Interactable_Rechamber", 1, 0f);
+
+            //rightGun.stats.needsRechamber2 = true;
+
+            //StartCoroutine(Rechamber(rightGun));
+
+            Debug.LogError("Needs rechamber");
+            ////temp.
+            //if(gun.rechamberSound)
+            //    StartCoroutine(WaitThenRechamber());
+
+            //anim.Play("Rechamber", 0, 0f);
+            anim.SetTrigger("Rechamber");
+        }
+
+        UpdateAmmo();
+    }
+
+    public IEnumerator BurstShot()
+    {
+        int i = 0;
+
+        while(true)
+        {
+            tempShoot();
+
+            yield return new WaitForSeconds(gun.burstInterval);
+
+            i++;
+
+            if(i >= gun.burstCount)
+                break;
+        }
+    }
+
+    public void CartridgeEject()
+    {
+        if(gun.cartridgeEject)
+            gun.cartridgeEject.Play();
+    }
+
+    public void CanManualRechamberStart()
+    {
+        if(gun.hasRechamber && gun.needsRechamber)
+            gun.canManualIncrementalReload = true;
+    }
+
+    public void CanManualRechamberEnd()
+    {
+        if(gun.willManualIncrementalReload)
+        {
+            //IncrementalReload();
+            Debug.LogError("Manually Incremental Reload");
+            anim.Play("Reload", 0, gun.manualIncrementalReloadTime);
+        }
+
+        gun.willManualIncrementalReload = false;
+        gun.canManualIncrementalReload = false;
+    }
+
+    public void RechamberStart()
+    {
+
+    }
+
+    public void RechamberEnd()
+    {
+        gun.rechambered = true;
+    }
+
+    public void IncrementalReload()
+    {
+        //Need to check if gun.ammoLeft < gun.magazineSize b/c there was glitch where on the last incremental reload, it will just continue to add bullets until ammoReserved == 0 (this glitch only happened when there were many Enemies spawned; this 
+        //is possibly a glitch with AnimationEvents b/c there were so many Animators for each Enemy (which also used AnimationEvents)
+        if(gun.ammoLeft < gun.magazineSize && gun.ammoReserved > 0)
+        {
+            gun.ammoReserved -= gun.IncrementalReload();
+
+            PlayOneShot(incrementalReloadClip, minMaxIncrementalReloadPitch);
+
+            if(gun.ammoLeft >= gun.magazineSize || gun.ammoReserved <= 0)
+            {
+                //anim.SetBool("IsReloading", false); //If reloaded when ammoLeft != 0 and filled the magazine before reaching the end of the incremental reload animation, stop the animation to avoid overfilling the magazine
+                anim.Play("Reload", 0, gun.reloadEndTime); //Play reload animation at the end where character stops reloading
+                gun.anim.Play("ReloadEnd", 0, 0f);
+            }
+        }
+
+
+        UpdateAmmo();
+    }
+
+    public void ReloadEnd()
+    {
+        gun.Reload();
+
+        //PlayOneShot(incrementalReloadClip, minMaxIncrementalReloadPitch);
+
+
+        UpdateAmmo();
+    }
+
+    //public IEnumerator Rechamber(Gun gun)
+    //{
+    //    yield return new WaitForSeconds(gun.stats.rechamberTime);
+
+    //    if(rightGun.effects.gunScreen)
+    //        rightGun.effects.gunScreen.UpdateAmmoScreen(rightGun.stats.usesLeft);
+
+    //    isRecovering = false;
+    //    gun.stats.needsRechamber = false;
+    //    gun.stats.rechambered = true;
+    //    //((FirstPersonPlayer)player).rightArmAnim.SetBool("Rechamber", false);
+    //}
+
+    private void UpdateAmmo()
+    {
+        ammoText.text = $"{gun.ammoLeft} | {gun.ammoReserved}";
+    }
+
+    private void PlayOneShot(AudioClip audioClip, Vector2 minMaxPitch)
+    {
+        float pitch = Random.Range(minMaxPitch.x, minMaxPitch.y);
+
+        audioSource.pitch = pitch;
+
+        audioSource.PlayOneShot(audioClip);
+    }
+
+    private void SetHeadBobValues(HeadBobValues values)
+    {
+        headBob.motionBob.HorizontalBobRange = values.horizontalBobRange;
+        headBob.motionBob.VerticalBobRange = values.verticalBobRange;
+        headBob.SetStrideInterval(values.strideInterval);
+    }
+
+    private IEnumerator Crouch()
+    {
+        //Version 1: Only crouch
+        //crouchT = 0f;
+
+        //while(crouchT < crouchTime)
+        //{
+        //    float lastHeight = characterController.height;
+        //    characterController.height = Mathf.Lerp(standHeight, crouchHeight, crouchT / crouchTime);
+        //    characterController.center = new Vector3(0f, (characterController.height) / 2f, 0f);
+        //    cameraController.transform.localPosition = Vector3.up * (characterController.height - 0.05f); //Make CameraController slightly lower than CharacterController height so that Camera cannot clip through a ceiling that CharacterController can 
+        //                                                                                                  //just barely pass under for example
+
+        //    crouchT += Time.deltaTime;
+        //    yield return new WaitForFixedUpdate();
+        //}
+
+        //Version 2: Crouch and Stand
+        //crouchT = 0f;
+
+        //while(crouchT < crouchTime)
+        //{
+        //    if(isCrouching)
+        //        characterController.height = Mathf.Lerp(standHeight, crouchHeight, crouchT / crouchTime);
+        //    else
+        //        characterController.height = Mathf.Lerp(crouchHeight, standHeight, crouchT / crouchTime);
+
+        //    characterController.center = new Vector3(0f, (characterController.height) / 2f, 0f);
+        //    cameraController.transform.localPosition = Vector3.up * (characterController.height - 0.05f); //Make CameraController slightly lower than CharacterController height so that Camera cannot clip through ceilings
+
+        //    crouchT += Time.deltaTime;
+        //    yield return new WaitForFixedUpdate();
+        //}
+
+        //Version 3: Crouch and stand based on AnimationCurve
+        //Time-related variables; AnimationCurve TIME MUST BE [0, desiredCrouchDuration] AND VALUES MUST BE [0, 1]
+        crouchInterpolator = crouchCurveT = 0f; //crouchInterpolator is the t used to lerp from standing to crouching/v.v. ; crouchCurveT is the time to evaluate the crouchCurve at (whose output (curve value) will determine crouchInterpolator)
+
+        if(isCrouching)
+        {
+            while(crouchInterpolator < standToCrouchCurve[standToCrouchCurve.length - 1].time) //While evaluation time is less than curve length (which is the last key's time)
+            {
+                characterController.height = Mathf.Lerp(standHeight, crouchHeight, crouchInterpolator / standToCrouchCurve[standToCrouchCurve.length - 1].time);
+
+                characterController.center = new Vector3(0f, (characterController.height) / 2f, 0f);
+                cameraController.transform.localPosition = Vector3.up * (characterController.height - 0.05f); //Make CameraController slightly lower than CharacterController height so that Camera cannot clip through ceilings
+
+                crouchCurveT += crouchSpeed * Time.deltaTime;
+                crouchInterpolator = standToCrouchCurve.Evaluate(crouchCurveT);
+                yield return new WaitForFixedUpdate();
+            }
+        }
+        else
+        {
+            while(crouchInterpolator < crouchToStandCurve[crouchToStandCurve.length - 1].time) //While evaluation time is less than curve length (which is the last key's time)
+            {
+                characterController.height = Mathf.Lerp(crouchHeight, standHeight, crouchInterpolator / crouchToStandCurve[crouchToStandCurve.length - 1].time);
+
+                characterController.center = new Vector3(0f, (characterController.height) / 2f, 0f);
+                cameraController.transform.localPosition = Vector3.up * (characterController.height - 0.05f); //Make CameraController slightly lower than CharacterController height so that Camera cannot clip through ceilings
+
+                crouchCurveT += crouchSpeed * Time.deltaTime;
+                crouchInterpolator = crouchToStandCurve.Evaluate(crouchCurveT);
+                yield return new WaitForFixedUpdate();
+            }
+        }
+    }
+
+    //Items
+    public bool CanUse(Item item, out bool canUseSecondary)
+    {
+        int index = inventory2.names.IndexOf(item.itemID.itemName);
+        bool hasItemID = index > -1;
+
+        canUseSecondary = false;
+
+        if(item is BuyableItem)
+        {
+            //Old
+            //bool canUsePrimary = score >= ((BuyableItem)item).price && !inventoryOLD.Contains(((BuyableItem)item).itemName);
+
+            //New (check if works)
+            //bool canUsePrimary = score >= ((BuyableItem)item).price && !inventory2.names.Contains(((BuyableItem)item).itemName);
+
+            //New 2 (check if works)
+            bool canUsePrimary = score >= ((BuyableItem)item).price && !inventory2.names.Contains(((BuyableItem)item).itemID.itemName);
+
+            canUseSecondary = !canUsePrimary; //If can use primary, can't use secondary & v.v.
+
+            return canUsePrimary;
+        }
+        else if(!hasItemID || (hasItemID && inventory2.counts[index] < inventory2.itemIDs[index].maxCount))
+            return true;
+
+        return false;
+    }
+
+    public bool CanUse(ItemDispenser itemDispenser, out bool canUseSecondary)
+    {
+        int index = inventory2.names.IndexOf(itemDispenser.itemID.itemName);
+        bool hasItemID = index > -1;
+
+        canUseSecondary = false;
+        
+        bool canUsePrimary = score >= itemDispenser.price && !inventory2.names.Contains(itemDispenser.itemID.itemName);
+
+        canUseSecondary = !canUsePrimary; //If can use primary, can't use secondary & v.v.
+
+        return canUsePrimary;
+
+        //------------------------------------------------------------------------------------------------
+        //If can't use primary, then see if itemDispenser.dispensesMutuallyExclusiveItems is true, and if so, get the next ItemDispenser Component on the itemDispenser GameObject (see ItemDispenser for info about this)
+        //Then set canUseSecondary accordingly OR get rid of this variable b/c ItemDispenser GameObject can have many ItemDispenser Components and is not limied to only two (so going to have to traverse through ItemDispenser Components until 
+        //can find one that this player can use)
+        //------------------------------------------------------------------------------------------------
+
+        //////else if(!hasItemID || (hasItemID && inventory2.counts[index] < inventory2.itemIDs[index].maxCount))
+        //////    return true;
+
+        //////return false;
+    }
+
+    public void SetPromptText(string prompt)
+    {
+        if(promptText)
+            promptText.text = prompt;
+    }
+
+
+    private void PrintInventoryItems()
+    {
+        string inventoryString = "Inventory: ";
+
+        //foreach(string s in inventory.Keys)
+        for(int i = 0; i < inventory2.counts.Count; i++)
+        {
+            inventoryString += $"{inventory2.names[i]} ({inventory2.counts[i]}), ";
+        }
+
+        Debug.LogError(inventoryString);
+    }
+
+    public void UseAmmoItem(int ammoCount)
+    {
+        gun.ammoReserved += ammoCount;
+
+        UpdateAmmo();
+    }
+
+    public bool PickupPartItem(Pickup pickupItem, int count)
+    {
+        bool hasItem, canPickupAll;
+
+        int index = inventory2.names.IndexOf(pickupItem.itemID.itemName);
+        int amountPickable;
+
+        hasItem = index > -1;
+
+        if(hasItem)
+            amountPickable = inventory2.itemIDs[index].maxCount - inventory2.counts[index]; //If have the item, the amountPickable is the difference between maxCount and the amount held currently
+        else
+            amountPickable = pickupItem.itemID.maxCount; //If don't have the item, the amountPickable would be the maxCount
+
+        canPickupAll = amountPickable > count;
+
+        //If already have this ItemID
+        if(hasItem)
+        {
+            //If can pickup all of the item without going over the maxCount limit, then pick up all
+            if(canPickupAll)
+            {
+                inventory2.counts[index] += count;
+
+
+                return true;
+            }
+            //Else if can't pickup all, then partial pickup
+            else
+            {
+                inventory2.counts[index] += amountPickable;
+                pickupItem.count -= amountPickable;
+
+
+                return false;
+            }
+        }
+        //Else if don't have this ItemID
+        else
+        {
+            //If can pickup all of the item without going over the maxCount limit, then pick up all
+            if(canPickupAll)
+            {
+                inventory2.counts.Add(count);
+                inventory2.names.Add(pickupItem.itemID.itemName);
+                inventory2.itemIDs.Add(pickupItem.itemID);
+
+
+                return true;
+            }
+            //Else if can't pickup all, then partial pickup
+            else
+            {
+                inventory2.names.Add(pickupItem.itemID.itemName);
+                inventory2.itemIDs.Add(pickupItem.itemID);
+
+                inventory2.counts.Add(amountPickable);
+                pickupItem.count -= amountPickable;
+
+
+                return false;
+            }
+        }
+
+        //PrintInventoryItems();
+    }
+
+    public bool BuyItem(string itemName, int price)
+    {
+        if(score >= price)
+        {
+            if(PickUp(itemName))
+            {
+                score -= price;
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public string GetItem1()
+    {
+        if(item1)
+            return item1.name;
+
+        return "";
+    }
+
+    public string GetItem2()
+    {
+        if(item2)
+            return item2.name;
+
+        return "";
+    }
+
+    public string GetItem3()
+    {
+        if(item3)
+            return item3.name; //Eventually add name and displayName vars. to Explosive class (right now Exlposive.name is just Object.name so add a new public string name;)
+
+        return "";
+    }
+
+    public string GetItem4()
+    {
+        if(item4)
+            return item4.name; //Eventually add name and displayName vars. to Explosive class (right now Exlposive.name is just Object.name so add a new public string name;)
+
+        return "";
+    }
+
+    public List<string> GetItems()
+    {
+        return items;
+    }
+
+    public bool PickUp(string itemName)
+    {
+        bool pickedUp = false;
+
+        //If don't already have this Item
+        if(!items.Contains(itemName))
+        {
+            Gun newGun;
+            itemDictionary.TryGetValue(itemName, out newGun);
+
+            if(newGun)
+            {
+                if(currentItemIndex == 0)
+                {
+                    item1.gameObject.SetActive(false);
+                    item1 = newGun;
+                    gun = item1;
+                }
+                else if(currentItemIndex == 1)
+                {
+                    item2.gameObject.SetActive(false);
+                    item2 = newGun;
+                    gun = item2;
+                }
+
+                gun.gameObject.SetActive(true);
+
+                pickedUp = true;
+            }
+        }
+        //Else (already have this Item) if ammo is not replenished
+        else if(!gun.ammoReplenished)
+        {
+            gun.ReplenishAmmo();
+
+            pickedUp = true;
+        }
+
+        UpdateAnimatorOverrideController(gun);
+
+        UpdateAmmo();
+
+        return pickedUp;
+    }
+
+    public /*KeyValuePair<int, int>*/ List<string> GetInventory()
+    {
+        //Old
+        //return inventoryOLD;
+
+        //New
+        //List<string> inventoryList = new List<string>();
+        //foreach(string s in inventory.Keys)
+        //    inventoryList.Add(s);
+
+        //return inventoryList;
+
+        //New2
+        return FormattedInventory();
+    }
+
+    private List<string> GetAllRecipes()
+    {
+        List<string> formattedRecipes = new List<string>();
+
+        foreach(Recipe r in Item.allRecipes)
+        {
+            formattedRecipes.Add($"{r.GetItemID().itemName} ({AmountCraftable(r)})");
+        }
+
+
+        return formattedRecipes;
+    }
+
+    private List<string> FormattedInventory()
+    {
+        List<string> formattedInventory = new List<string>();
+
+        for(int i = 0; i < inventory2.counts.Count; i++)
+        {
+            formattedInventory.Add($"{inventory2.names[i]} ({inventory2.counts[i]})");
+        }
+
+
+        return formattedInventory;
+    }
+
+    private Collider[] GetCollisions(HalfExtents halfExtents, int layerMask, Quaternion rotation = new Quaternion())
+    {
+        return Physics.OverlapBox(halfExtents.origin, halfExtents.halfExtents, rotation, layerMask, QueryTriggerInteraction.Collide);
+        //return Physics.OverlapBox(transform.position + halfExtents.m_origin, halfExtents.halfExtents, transform.rotation, layerMask, QueryTriggerInteraction.Collide);
+    }
+
+    private List<T> ToList<T>(T[] array)
+    {
+        List<T> list = new List<T>();
+
+        foreach(T t in array)
+            list.Add(t);
+
+
+        return list;
+    }
+
+    public bool IsOutOfBounds()
+    {
+        return isOutOfBounds;
+    }
+
+    public void NotifyOutOfBounds(bool outOfBounds)
+    {
+        //If just went out of bounds (if was not out of bounds and is now out of bounds)
+        if(!isOutOfBounds && outOfBounds)
+            OnOutOfBounds();
+
+        //If just went back into bounds (if was out of bounds and is now in bounds)
+        else if(isOutOfBounds && !outOfBounds)
+            OnInBounds();
+        
+        isOutOfBounds = outOfBounds;
+    }
+
+    private void OnOutOfBounds()
+    {
+        outOfBoundsImage.gameObject.SetActive(true);
+    }
+
+    private void OnInBounds()
+    {
+        outOfBoundsImage.gameObject.SetActive(false);
+    }
+
+    /*private*/
+    public void TakeDamage(Body body)
+    {
+        if(health > 0)
+        {
+            health -= body.fightingSkills.strength;
+
+            lastTimeHit = Time.time;
+            regainFromHealth = health;
+            healthRegainT = 0;
+
+            //deadAnim.SetFloat("Damage", Mathf.Clamp01(1 - (health / maxHealth)));
+
+            if(health <= 0)
+                Die();
+        }
+    }
+
+    private void Die()
+    {
+        if(!isDead)
+        {
+            Enemy.playerIsDead = true;
+
+            //deadAnim.Play("Die_TypewriterStyle", 0, -1f);
+            deadAnim.Play("Die_TypewriterStyle");
+
+
+            isDead = true;
+        }
+    }
+
+    private int GetHitScore(HumanBodyBones hitBodyPart, bool isKillShot)
+    {
+        int score = 10;
+
+        if(hitBodyPart == HumanBodyBones.Head && isKillShot)
+            score *= 10;
+
+        Debug.LogError("isKillShot = " + isKillShot);
+
+        return score;
+    }
+
+    private void DrawHalfExtents(HalfExtents halfExtents, Color color)
+    {
+        Gizmos.color = color;
+        if(halfExtents.parent)
+            Gizmos.DrawWireMesh(cubeMesh, 0, halfExtents.origin, halfExtents.parent.rotation, halfExtents.halfExtents * 2);
+
+        //if(halfExtents.parent)
+        //    Gizmos.DrawWireMesh(cubeMesh, 0, halfExtents.parent.TransformPoint(halfExtents.origin), halfExtents.parent.rotation, halfExtents.halfExtents * 2);
+        //else
+        //    Gizmos.DrawWireMesh(cubeMesh, 0, transform.TransformPoint(halfExtents.origin), transform.rotation, halfExtents.halfExtents * 2);
+    }
+
+    //For Guns
+    public void UpdateAnimatorOverrideController(Gun g)
+    {
+        clipOverrides[/*name + "_*/"Idle"] = g.animations.idle;
+        clipOverrides[/*name + "_*/"Aim"] = g.animations.aim;
+        clipOverrides[/*name + "_*/"AimShoot"] = g.animations.aimShoot;
+        clipOverrides[/*name + "_*/"Reload"] = g.animations.reload;
+        clipOverrides[/*name + "_*/"Rechamber"] = g.animations.rechamber;
+        clipOverrides[/*name + "_*/"Shoot"] = g.animations.shoot;
+        clipOverrides[/*name + "_*/"SwapStart"] = g.animations.swapStart;
+        clipOverrides[/*name + "_*/"SwapEnd"] = g.animations.swapEnd;
+
+        animatorOverrideController.ApplyOverrides(clipOverrides);
+    }
+
+    //Sounds & Animations
+    public void ShowGun()
+    {
+        if(gun)
+            gun.gameObject.SetActive(true);
+    }
+
+    public void HideGun()
+    {
+        if(gun)
+        {
+            gun.gameObject.SetActive(false);
+            Debug.LogError("Hid Gun");
+        }
+        else
+            Debug.LogError("No Gun to hide");
+    }
+
+    public void GunRechamber()
+    {
+        Debug.LogError("GunRechamber()");
+
+        gun.anim.Play("Rechamber2", 0, 0f);
+    }
+
+    public void RechamberStartSound()
+    {
+        audioSourcePlayer.Play("RechamberStartSound");
+    }
+
+    public void RechamberEndSound()
+    {
+        audioSourcePlayer.Play("RechamberEndSound");
+    }
+
+    public void ThrowExplosive()
+    {
+        if(currentExplosive)
+        {
+            currentExplosive.transform.parent = null;
+
+            currentExplosive.rb.isKinematic = false;
+            currentExplosive.rb.AddForce(camera.transform.forward * throwForce);
+            //Old
+            //This doesn't work great b/c depending on when the Explosive is thrown, the rotation of the Explosive affects the relative torque and so it sometimes doesn't look like the character threw it realistically
+            //currentExplosive.rb.AddRelativeTorque(explosiveTorque);
+
+            //New
+            //currentExplosive.rb.AddTorque(camera.transform.right * explosiveTorque.magnitude); //Temp.; going to make torque into a float
+            currentExplosive.rb.AddRelativeTorque(explosiveTorque);
+
+            currentExplosive = null;
+        }
+    }
+
+    private void OnDrawGizmos/*Selected*/()
+    {
+        Gizmos.color = Color.blue;
+        Gizmos.DrawWireCube(transform.position + groundCheckOrigin, groundCheckHalfExtents * 2);
+
+        DrawHalfExtents(bodyHalfExtents, Color.red);
+        DrawHalfExtents(selectHalfExtents, Color.blue);
+    }
+
+    public int GetScore()
+    {
+        return score;
+    }
+
+    public void AddScore(int addedScore)
+    {
+        score += addedScore;
+    }
+}
