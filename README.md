@@ -2,17 +2,25 @@
 This is a simple zombie game made with Unity 3D. It is a WIP that was used as a way to learn how to implement different features such as enemies, a weapon system, vehicles, and crafting. 
 
 
-<h1>Gameplay</h1>
+# Gameplay
 ![Alt Text](Gameplay.gif)
 
+The game features a simple wave-based zombie mode with the player gaining points for damaging zombies. There is a buyable weapon and fire trap to help the player survive the waves. 
 
-<h1>Weapons</h1>
+
+# Weapons
 ![Alt Text](Weapons.gif)
 
+The game currently has four basic weapons: a pistol, rifle, machine gun, and sniper.
 
-<h1>Interactables</h1>
+
+# Interactables
 ![Alt Text](Interactables.gif)
 
+Interactables can refer to anything that the player can interact with such as a vehicle or a mounted turret. 
 
-<h1>Crafting</h1>
+
+# Crafting
 ![Alt Text](Crafting.gif)
+
+There is a basic inventory and crafting system that does allow the player to collect resources and determine whether they have suffiecient ingredients to craft other items, however the crafted items simply appear in the inventory and do not provide functionality yet. 
